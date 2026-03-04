@@ -1,21 +1,70 @@
-name: CI
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+name: Rust CI
+
+on: [push, pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Set up a test database URL for CI
+  DATABASE_URL: postgres://user:password@localhost:5432/va_gateway_db_test
+  UPSTREAM_SERVICE_URL: http://localhost:9999 # A dummy URL for proxy tests
+
 jobs:
-  check:
+  build-and-test:
+    name: Build and Test
     runs-on: ubuntu-latest
+
+    services:
+      postgres: # Define a PostgreSQL service for tests
+        image: postgres:15
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: va_gateway_db_test
+        ports:
+          - 5432:5432
+        options: >- # Health check for PostgreSQL
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |-
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Wait for PostgreSQL to be ready
+        run: |-
+          for i in $(seq 1 10); do
+            pg_isready -h localhost -p 5432 -U user && break
+            echo "Waiting for PostgreSQL..."
+            sleep 5
+          done
+          pg_isready -h localhost -p 5432 -U user
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy linter
+        run: cargo clippy -- -D warnings
+
+      - name: Build project
+        run: cargo build --verbose
+
+      - name: Run tests
+        run: cargo test --verbose
